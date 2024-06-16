@@ -8,11 +8,11 @@
 // added a simple ray tracer to visualize a scene with all primitives.
 //
 
-#define PATH_LENGTH 12
+#define PATH_LENGTH 2
 #iChannel0 "self"
 #include "common.glsl"
 #define LOWER_BOUND 450
-#define UPPER_BOUND 780
+#define UPPER_BOUND 750
 #define NUM_WAVELENGTHS 12
 
 // Spectrum to xyz approx function from "Simple Analytic Approximations to the CIE XYZ Color Matching Functions"
@@ -37,6 +37,16 @@ float zFit_1931(float wave)
     float t2 = (wave - 459.0f)*((wave < 459.0f) ? 0.0385f : 0.0725f);
 
     return 1.217f*exp(-0.5f*t1*t1) + 0.681f*exp(-0.5f*t2*t2);
+}
+
+vec3 XYZtosRGB(vec3 XYZ)
+{
+    vec3 rgb;
+    rgb.x = XYZ.x *  3.2409699f + XYZ.y * -1.5373832f + XYZ.z * -0.4986108f;
+    rgb.y = XYZ.x * -0.9692436f + XYZ.y *  1.8759675f + XYZ.z *  0.0415551f;
+    rgb.z = XYZ.x *  0.0556301f + XYZ.y * -0.2039770f + XYZ.z *  1.0569715f;
+    
+    return rgb;
 }
 
 //
@@ -180,8 +190,8 @@ float reflectivity_old(float n1, float n2, float cosTheta, float wavelenght) {
     return r0 + (1. - r0) * (1. - pow(cosTheta, exponent));
 }
 
-float reflectivity(float n1, float n2, float cosTheta, float wavelenght) {
-    float r0 = (n1 - n2) / (n1 + n2);
+float reflectivity(float n1_over_n2, float cosTheta, float wavelenght) {
+    float r0 = (n1_over_n2 - 1.) / (n1_over_n2 + 1.);
     r0 = r0*r0;
     return r0 + (1. - r0) * pow((1. - cosTheta), 5.);
 }
@@ -198,10 +208,11 @@ float ray_trace(in vec3 ro, in vec3 rd, in float wavelenght, inout float seed) {
     float ray_intensity = 1.;
     vec3 albedo, normal = vec3(1.);
     float roughness, type;
-    float nt = 1.5;
+    float nt = 1.33;
     float nt_nt = nt * nt;
     vec3 col = vec3(1.);
-    for (int i=0; i<PATH_LENGTH; ++i) {    
+    float cosine = 1.;
+    for (int i=0; i < PATH_LENGTH; ++i) {
     	vec3 res = worldhit(ro, rd, vec2(.0001, 100), normal);
 		if (res.z > 0.) {
 			ro += rd * res.y;
@@ -218,10 +229,11 @@ float ray_trace(in vec3 ro, in vec3 rd, in float wavelenght, inout float seed) {
                 }
             } else if (type < METAL+.5) {
                 col *= albedo;
-                rd = modifyDirectionWithRoughness(normal, reflect(rd,normal), roughness, seed);            
+                rd = modifyDirectionWithRoughness(normal, reflect(rd,normal), roughness, seed);
+                ray_intensity *= reflectivity(1., dot(rd, normal), wavelenght);   
             } else { // DIELECTRIC
                 vec3 normalOut, refracted;
-                float ni_over_nt, cosine, reflectProb = 1.;
+                float ni_over_nt, reflectProb = 1.;
                 
                 if (dot(rd, normal) > 0.) {
                     normalOut = -normal;
@@ -245,18 +257,18 @@ float ray_trace(in vec3 ro, in vec3 rd, in float wavelenght, inout float seed) {
                 
                 if (hash1(seed) <= reflectProb) {
                     rd = reflect(rd, normal);
-                    ray_intensity *= reflectivity(1., nt, cosine, wavelenght);
+                    ray_intensity *= reflectivity(ni_over_nt, cosine, wavelenght);
                 } else {
                     rd = refracted;
-                    ray_intensity *= 1. - reflectivity(1., nt, cosine, wavelenght);
+                    ray_intensity *= 1. - reflectivity(ni_over_nt, cosine, wavelenght);
                 }
                 rd = modifyDirectionWithRoughness(-normalOut, rd, roughness, seed);
             }
         } else {
-			return ray_intensity;
+			return float(i);
         }
     }  
-    return 0.;
+    return ray_intensity;
 }
 
 vec3 render( in vec3 ro, in vec3 rd, inout float seed ) {
@@ -264,22 +276,24 @@ vec3 render( in vec3 ro, in vec3 rd, inout float seed ) {
     float color_y = 0.;
     float color_z = 0.;
     float intensity = 1.;
+    float wave;
 
     // Loop over wavelengths
     for (int i_wave=0; i_wave < NUM_WAVELENGTHS; i_wave++) {
-        float wave = float(LOWER_BOUND) + float(UPPER_BOUND-LOWER_BOUND * i_wave) / float(NUM_WAVELENGTHS);
+        wave = float(LOWER_BOUND) + float((UPPER_BOUND-LOWER_BOUND) * i_wave) / float(NUM_WAVELENGTHS);
+        //wave = 450.;
         intensity = ray_trace(ro, rd, wave, seed);
-        //intensity = 1.;
+        // intensity = 1.;
 
         color_x += intensity * xFit_1931(wave);
         color_y += intensity * yFit_1931(wave);
         color_z += intensity * zFit_1931(wave);
     }
     vec3 xyz = vec3(color_x, color_y, color_z);
-    //xyz = vec3(xFit_1931(450.), yFit_1931(450.), zFit_1931(450.));
-    vec3 rgb = xyz * vec3( 3.2406, -1.5372, -0.4986 ) + xyz * vec3( -0.9689, 1.8758, 0.0415 ) + xyz * vec3( 0.0557, -0.2040, 1.0570 );
-    
-    return rgb;
+    //xyz = vec3(xFit_1931(wave), yFit_1931(wave), zFit_1931(wave));
+    vec3 rgb = XYZtosRGB(xyz);
+    // return rgb;
+    return vec3(intensity,0,0);
 }
 
 mat3 setCamera( in vec3 ro, in vec3 ta, float cr ) {
