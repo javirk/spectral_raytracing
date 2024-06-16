@@ -11,6 +11,33 @@
 #define PATH_LENGTH 12
 #iChannel0 "self"
 #include "common.glsl"
+#define LOWER_BOUND 450
+#define UPPER_BOUND 780
+#define NUM_WAVELENGTHS 12
+
+// Spectrum to xyz approx function from "Simple Analytic Approximations to the CIE XYZ Color Matching Functions"
+// http://jcgt.org/published/0002/02/01/paper.pdf and https://www.shadertoy.com/view/WlsXDj
+//Inputs:  Wavelength in nanometers
+float xFit_1931(float wave)
+{
+    float t1 = (wave - 442.0f)*((wave < 442.0f) ? 0.0624f : 0.0374f);
+    float t2 = (wave - 599.8f)*((wave < 599.8f) ? 0.0264f : 0.0323f);
+    float t3 = (wave - 501.1f)*((wave < 501.1f) ? 0.0490f : 0.0382f);
+    return 0.362f*exp(-0.5f*t1*t1) + 1.056f*exp(-0.5f*t2*t2) - 0.065f*exp(-0.5f*t3*t3);
+}
+float yFit_1931(float wave)
+{
+    float t1 = (wave - 568.8f)*((wave < 568.8f) ? 0.0213f : 0.0247f);
+    float t2 = (wave - 530.9f)*((wave < 530.9f) ? 0.0613f : 0.0322f);
+    return 0.821f*exp(-0.5f*t1*t1) + 0.286f*exp(-0.5f*t2*t2);
+}
+float zFit_1931(float wave)
+{
+    float t1 = (wave - 437.0f)*((wave < 437.0f) ? 0.0845f : 0.0278f);
+    float t2 = (wave - 459.0f)*((wave < 459.0f) ? 0.0385f : 0.0725f);
+
+    return 1.217f*exp(-0.5f*t1*t1) + 0.681f*exp(-0.5f*t2*t2);
+}
 
 //
 // Hash functions by Nimitz:
@@ -115,9 +142,9 @@ float checkerBoard( vec2 p ) {
 }
 
 vec3 getSkyColor( vec3 rd ) {
-    vec3 col = mix(vec3(1),vec3(.5,.7,1), .5+.5*rd.y);
-    float sun = clamp(dot(normalize(vec3(-.4,.7,-.6)),rd), 0., 1.);
-    col += vec3(1,.6,.1)*(pow(sun,4.) + 10.*pow(sun,32.));
+    vec3 col = mix(vec3(1), vec3(.5, .7, 1), .5 + .5 * rd.y);
+    float sun = clamp(dot(normalize(vec3(-.4, .7, -.6)), rd), 0., 1.);
+    col += vec3(1, .6, .1)*(pow(sun, 4.) + 10. * pow(sun, 32.));
     return col;
 }
 
@@ -144,7 +171,19 @@ void getMaterialProperties(in vec3 pos, in float mat,
         type = floor(gpuIndepentHash(mat+.3) * 3.);
         roughness = (1.-type*.475) * gpuIndepentHash(mat);
     }
-    //type = 2.;
+}
+
+float reflectivity_old(float n1, float n2, float cosTheta, float wavelenght) {
+    float r0 = (n1 - n2) / (n1 + n2);
+    r0 = r0*r0;
+    float exponent = 1. / (1. + 0.05 * (wavelenght - float(LOWER_BOUND)));
+    return r0 + (1. - r0) * (1. - pow(cosTheta, exponent));
+}
+
+float reflectivity(float n1, float n2, float cosTheta, float wavelenght) {
+    float r0 = (n1 - n2) / (n1 + n2);
+    r0 = r0*r0;
+    return r0 + (1. - r0) * pow((1. - cosTheta), 5.);
 }
 
 //
@@ -152,15 +191,16 @@ void getMaterialProperties(in vec3 pos, in float mat,
 //
 
 float schlick(float cosine, float r0) {
-    return r0 + (1.-r0)*pow((1.-cosine),5.);
+    return r0 + (1. - r0) * pow((1. - cosine), 5.);
 }
 
-vec3 render( in vec3 ro, in vec3 rd, inout float seed ) {
-    vec3 albedo, normal, col = vec3(1.); 
+float ray_trace(in vec3 ro, in vec3 rd, in float wavelenght, inout float seed) {
+    float ray_intensity = 1.;
+    vec3 albedo, normal = vec3(1.);
     float roughness, type;
-    float nt = 1.33;
+    float nt = 1.5;
     float nt_nt = nt * nt;
-    
+    vec3 col = vec3(1.);
     for (int i=0; i<PATH_LENGTH; ++i) {    
     	vec3 res = worldhit(ro, rd, vec2(.0001, 100), normal);
 		if (res.z > 0.) {
@@ -169,7 +209,7 @@ vec3 render( in vec3 ro, in vec3 rd, inout float seed ) {
             getMaterialProperties(ro, res.z, albedo, type, roughness);
             
             if (type < LAMBERTIAN+.5) { // Added/hacked a reflection term
-                float F = FresnelSchlickRoughness(max(0.,-dot(normal, rd)), .04, roughness);
+                float F = FresnelSchlickRoughness(max(0., -dot(normal, rd)), .04, roughness);
                 if (F > hash1(seed)) {
                     rd = modifyDirectionWithRoughness(normal, reflect(rd,normal), roughness, seed);
                 } else {
@@ -187,7 +227,7 @@ vec3 render( in vec3 ro, in vec3 rd, inout float seed ) {
                     normalOut = -normal;
             		ni_over_nt = nt;
                     cosine = dot(rd, normal);
-                    cosine = sqrt(1.-nt_nt-nt_nt*cosine*cosine);
+                    cosine = sqrt(1. - nt_nt - nt_nt * cosine * cosine);
                 } else {
                     normalOut = normal;
                     ni_over_nt = 1./nt;
@@ -199,19 +239,47 @@ vec3 render( in vec3 ro, in vec3 rd, inout float seed ) {
     	        
         	    // Handle total internal reflection.
                 if(refracted != vec3(0)) {
-                	float r0 = (1.-ni_over_nt)/(1.+ni_over_nt);
+                	float r0 = (1. - ni_over_nt)/(1. + ni_over_nt);
 	        		reflectProb = FresnelSchlickRoughness(cosine, r0*r0, roughness);
                 }
                 
-                rd = hash1(seed) <= reflectProb ? reflect(rd,normal) : refracted;
-                rd = modifyDirectionWithRoughness(-normalOut, rd, roughness, seed);            
+                if (hash1(seed) <= reflectProb) {
+                    rd = reflect(rd, normal);
+                    ray_intensity *= reflectivity(1., nt, cosine, wavelenght);
+                } else {
+                    rd = refracted;
+                    ray_intensity *= 1. - reflectivity(1., nt, cosine, wavelenght);
+                }
+                rd = modifyDirectionWithRoughness(-normalOut, rd, roughness, seed);
             }
         } else {
-            col *= getSkyColor(rd);
-			return col;
+			return ray_intensity;
         }
     }  
-    return vec3(0);
+    return 0.;
+}
+
+vec3 render( in vec3 ro, in vec3 rd, inout float seed ) {
+    float color_x = 0.;
+    float color_y = 0.;
+    float color_z = 0.;
+    float intensity = 1.;
+
+    // Loop over wavelengths
+    for (int i_wave=0; i_wave < NUM_WAVELENGTHS; i_wave++) {
+        float wave = float(LOWER_BOUND) + float(UPPER_BOUND-LOWER_BOUND * i_wave) / float(NUM_WAVELENGTHS);
+        intensity = ray_trace(ro, rd, wave, seed);
+        //intensity = 1.;
+
+        color_x += intensity * xFit_1931(wave);
+        color_y += intensity * yFit_1931(wave);
+        color_z += intensity * zFit_1931(wave);
+    }
+    vec3 xyz = vec3(color_x, color_y, color_z);
+    //xyz = vec3(xFit_1931(450.), yFit_1931(450.), zFit_1931(450.));
+    vec3 rgb = xyz * vec3( 3.2406, -1.5372, -0.4986 ) + xyz * vec3( -0.9689, 1.8758, 0.0415 ) + xyz * vec3( 0.0557, -0.2040, 1.0570 );
+    
+    return rgb;
 }
 
 mat3 setCamera( in vec3 ro, in vec3 ta, float cr ) {
@@ -231,32 +299,33 @@ void mainImage( out vec4 fragColor, in vec2 fragCoord ) {
     vec3 ta = vec3(0., 1., 0.);
     mat3 ca = setCamera(ro, ta, 0.);    
     vec3 normal;
-    
+
     float fpd = data.x;
     if(all(equal(ivec2(fragCoord), ivec2(0)))) {
         // Calculate focus plane.
         float nfpd = worldhit(ro, normalize(vec3(.5,0,-.5)-ro), vec2(0, 100), normal).y;
-		fragColor = vec4(nfpd, iResolution.xy, iResolution.x);
-        // fragColor = vec4(1., 0., 0., 1.);
+        fragColor = vec4(nfpd, iResolution.xy, iResolution.x);
     } else { 
-      vec2 p = (-iResolution.xy + 2.*fragCoord - 1.)/iResolution.y;
-      float seed = float(baseHash(floatBitsToUint(p - iTime)))/float(0xffffffffU);
+        vec2 p = (-iResolution.xy + 2.*fragCoord - 1.)/iResolution.y;
+        float seed = float(baseHash(floatBitsToUint(p - iTime)))/float(0xffffffffU);
 
-      // AA
-      p += 2.*hash2(seed)/iResolution.y;
-      vec3 rd = ca * normalize(vec3(p.xy, 1.6));  
+        // AA
+        p += 2.*hash2(seed)/iResolution.y;
+        vec3 rd = ca * normalize(vec3(p.xy, 1.6));  
 
-      // DOF
-      vec3 fp = ro + rd * fpd;
-      ro = ro + ca * vec3(randomInUnitDisk(seed), 0.)*.02;
-      rd = normalize(fp - ro);
+        // DOF
+        vec3 fp = ro + rd * fpd;
+        ro = ro + ca * vec3(randomInUnitDisk(seed), 0.)*.02;
+        rd = normalize(fp - ro);
 
-      vec3 col = render(ro, rd, seed);
+        vec3 col = render(ro, rd, seed);
 
-      if (reset) {
-        fragColor = vec4(col, 1);
-      } else {
-        fragColor = vec4(col, 1) + texelFetch(iChannel0, ivec2(fragCoord), 0);
-      }
+        if (reset) {
+            fragColor = vec4(col, 1);
+        } else {
+            fragColor = vec4(col, 1) + texelFetch(iChannel0, ivec2(fragCoord), 0);
+            //fragColor = texelFetch(iChannel0, ivec2(fragCoord), 0);
+        }
     }
+    
 }
