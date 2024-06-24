@@ -8,7 +8,7 @@
 // added a simple ray tracer to visualize a scene with all primitives.
 //
 
-#define PATH_LENGTH 2
+#define PATH_LENGTH 12
 #iChannel0 "self"
 #include "common.glsl"
 #define LOWER_BOUND 450
@@ -47,6 +47,15 @@ vec3 XYZtosRGB(vec3 XYZ)
     rgb.z = XYZ.x *  0.0556301f + XYZ.y * -0.2039770f + XYZ.z *  1.0569715f;
     
     return rgb;
+}
+
+float d65_illuminant(float wave)
+{
+    // float term1 = 1.35606;
+    float term2 = -0.34302 * math.cos(4.88600 * wave * math.pi / 180);
+    float term3 = 0.09163 * math.sin(4.88600 * wave * math.pi / 180);
+    float E_D65 = 100 * (1.35606 + term2 + term3);
+    return E_D65;
 }
 
 //
@@ -201,17 +210,18 @@ float reflectivity(float n1_over_n2, float cosTheta, float wavelenght) {
 //
 
 float schlick(float cosine, float r0) {
-    return r0 + (1. - r0) * pow((1. - cosine), 5.);
+    return r0 + (1. - r0) * pow(abs(1. - cosine), 5.);
 }
 
 float ray_trace(in vec3 ro, in vec3 rd, in float wavelenght, inout float seed) {
-    float ray_intensity = 1.;
     vec3 albedo, normal = vec3(1.);
     float roughness, type;
     float nt = 1.33;
     float nt_nt = nt * nt;
     vec3 col = vec3(1.);
     float cosine = 1.;
+    int i_refracted = 0;
+    float ray_intensity = 1.;
     for (int i=0; i < PATH_LENGTH; ++i) {
     	vec3 res = worldhit(ro, rd, vec2(.0001, 100), normal);
 		if (res.z > 0.) {
@@ -230,12 +240,13 @@ float ray_trace(in vec3 ro, in vec3 rd, in float wavelenght, inout float seed) {
             } else if (type < METAL+.5) {
                 col *= albedo;
                 rd = modifyDirectionWithRoughness(normal, reflect(rd,normal), roughness, seed);
-                ray_intensity *= reflectivity(1., dot(rd, normal), wavelenght);   
+                // ray_intensity *= reflectivity(1., dot(rd, normal), wavelenght);   
             } else { // DIELECTRIC
                 vec3 normalOut, refracted;
                 float ni_over_nt, reflectProb = 1.;
                 
                 if (dot(rd, normal) > 0.) {
+                    // Ray is inside the object.
                     normalOut = -normal;
             		ni_over_nt = nt;
                     cosine = dot(rd, normal);
@@ -260,40 +271,113 @@ float ray_trace(in vec3 ro, in vec3 rd, in float wavelenght, inout float seed) {
                     ray_intensity *= reflectivity(ni_over_nt, cosine, wavelenght);
                 } else {
                     rd = refracted;
-                    ray_intensity *= 1. - reflectivity(ni_over_nt, cosine, wavelenght);
+                    ray_intensity *= 1. - reflectivity(ni_over_nt, dot(rd, normalOut), wavelenght);
                 }
                 rd = modifyDirectionWithRoughness(-normalOut, rd, roughness, seed);
             }
         } else {
-			return float(i);
+            return ray_intensity;
         }
     }  
     return ray_intensity;
 }
 
-vec3 render( in vec3 ro, in vec3 rd, inout float seed ) {
+float calculate_normalization_factor() {
+    float normalization_factor = 0.;
+    for (int i_wave=0; i_wave < NUM_WAVELENGTHS; i_wave++) {
+        float wave = float(LOWER_BOUND) + float((UPPER_BOUND-LOWER_BOUND) * i_wave) / float(NUM_WAVELENGTHS);
+        normalization_factor += yFit_1931(wave);
+    }
+    return normalization_factor;
+}
+
+vec3 render_new( in vec3 ro, in vec3 rd, inout float seed ) {
     float color_x = 0.;
     float color_y = 0.;
     float color_z = 0.;
-    float intensity = 1.;
+    float k = 100. / calculate_normalization_factor();
+    
     float wave;
 
     // Loop over wavelengths
     for (int i_wave=0; i_wave < NUM_WAVELENGTHS; i_wave++) {
         wave = float(LOWER_BOUND) + float((UPPER_BOUND-LOWER_BOUND) * i_wave) / float(NUM_WAVELENGTHS);
         //wave = 450.;
-        intensity = ray_trace(ro, rd, wave, seed);
+        float intensity = ray_trace(ro, rd, wave, seed);
         // intensity = 1.;
+        float illuminant = d65_illuminant(wave);
 
-        color_x += intensity * xFit_1931(wave);
-        color_y += intensity * yFit_1931(wave);
-        color_z += intensity * zFit_1931(wave);
+        color_x += intensity * xFit_1931(wave) * illuminant;
+        color_y += intensity * yFit_1931(wave) * illuminant;
+        color_z += intensity * zFit_1931(wave) * illuminant;
     }
     vec3 xyz = vec3(color_x, color_y, color_z);
+
+    xyz *= k;
+    xyz.x /= (xyz.x + xyz.y + xyz.z);
+    xyz.y /= (xyz.x + xyz.y + xyz.z);
+    xyz.z = 1. - xyz.x - xyz.y;
+
     //xyz = vec3(xFit_1931(wave), yFit_1931(wave), zFit_1931(wave));
     vec3 rgb = XYZtosRGB(xyz);
-    // return rgb;
-    return vec3(intensity,0,0);
+    return rgb;
+    //return vec3(intensity,0,0);
+}
+
+vec3 render( in vec3 ro, in vec3 rd, inout float seed ) {
+    vec3 albedo, normal, col = vec3(1.); 
+    float roughness, type;
+    
+    for (int i=0; i<PATH_LENGTH; ++i) {    
+    	vec3 res = worldhit( ro, rd, vec2(.0001, 100), normal );
+		if (res.z > 0.) {
+			ro += rd * res.y;
+       		
+            getMaterialProperties(ro, res.z, albedo, type, roughness);
+            
+            if (type < LAMBERTIAN+.5) { // Added/hacked a reflection term
+                float F = FresnelSchlickRoughness(max(0.,-dot(normal, rd)), .04, roughness);
+                if (F > hash1(seed)) {
+                    rd = modifyDirectionWithRoughness(normal, reflect(rd,normal), roughness, seed);
+                } else {
+                    col *= albedo;
+			        rd = cosWeightedRandomHemisphereDirection(normal, seed);
+                }
+            } else if (type < METAL+.5) {
+                col *= albedo;
+                rd = modifyDirectionWithRoughness(normal, reflect(rd,normal), roughness, seed);            
+            } else { // DIELECTRIC
+                vec3 normalOut, refracted;
+                float ni_over_nt, cosine, reflectProb = 1.;
+                if (dot(rd, normal) > 0.) {
+                    normalOut = -normal;
+            		ni_over_nt = 1.4;
+                    cosine = dot(rd, normal);
+                    cosine = sqrt(1.-(1.4*1.4)-(1.4*1.4)*cosine*cosine);
+                } else {
+                    normalOut = normal;
+                    ni_over_nt = 1./1.4;
+                    cosine = -dot(rd, normal);
+                }
+            
+	            // Refract the ray.
+	            refracted = refract(normalize(rd), normalOut, ni_over_nt);
+    	        
+        	    // Handle total internal reflection.
+                if(refracted != vec3(0)) {
+                	float r0 = (1.-ni_over_nt)/(1.+ni_over_nt);
+	        		reflectProb = FresnelSchlickRoughness(cosine, r0*r0, roughness);
+                }
+                
+                rd = hash1(seed) <= reflectProb ? reflect(rd,normal) : refracted;
+                rd = modifyDirectionWithRoughness(-normalOut, rd, roughness, seed);            
+            }
+        } else {
+            col *= getSkyColor(rd);
+			return col;
+        }
+    }  
+    return vec3(0);
 }
 
 mat3 setCamera( in vec3 ro, in vec3 ta, float cr ) {
