@@ -13,7 +13,9 @@
 #include "common.glsl"
 #define LOWER_BOUND 450
 #define UPPER_BOUND 750
-#define NUM_WAVELENGTHS 12
+#define NUM_WAVELENGTHS 10
+
+#define ILLUMINANT_A 1.435e7 / (2848. * 560.) - 1.
 
 // Spectrum to xyz approx function from "Simple Analytic Approximations to the CIE XYZ Color Matching Functions"
 // http://jcgt.org/published/0002/02/01/paper.pdf and https://www.shadertoy.com/view/WlsXDj
@@ -49,13 +51,11 @@ vec3 XYZtosRGB(vec3 XYZ)
     return rgb;
 }
 
-float d65_illuminant(float wave)
-{
-    // float term1 = 1.35606;
-    float term2 = -0.34302 * math.cos(4.88600 * wave * math.pi / 180);
-    float term3 = 0.09163 * math.sin(4.88600 * wave * math.pi / 180);
-    float E_D65 = 100 * (1.35606 + term2 + term3);
-    return E_D65;
+float a_illuminant(float wave) {
+    float den = exp(1.435e7 / (2848. * wave)) - 1.;
+    float num = exp(ILLUMINANT_A);
+
+    return 100. * pow(560. / wave, 5.) * num / den;
 }
 
 //
@@ -143,6 +143,7 @@ vec3 opU( vec3 d, float iResult, float mat ) {
 vec3 worldhit( in vec3 ro, in vec3 rd, in vec2 dist, out vec3 normal ) {
     vec3 tmp0, tmp1, d = vec3(dist, 0.);
     // Last argument in opU is material.
+    
     d = opU(d, iPlane(ro, rd, d.xy, normal, vec3(0,1,0), 0.), 1.);  // Metal
     d = opU(d, iSphere(ro - vec3( 0,1, 0), rd, d.xy, normal, 1.), 10.);  // Dielectric
     return d;
@@ -295,7 +296,7 @@ vec3 render_new( in vec3 ro, in vec3 rd, inout float seed ) {
     float color_x = 0.;
     float color_y = 0.;
     float color_z = 0.;
-    float k = 100. / calculate_normalization_factor();
+    float k = 1. / calculate_normalization_factor();
     
     float wave;
 
@@ -305,7 +306,7 @@ vec3 render_new( in vec3 ro, in vec3 rd, inout float seed ) {
         //wave = 450.;
         float intensity = ray_trace(ro, rd, wave, seed);
         // intensity = 1.;
-        float illuminant = d65_illuminant(wave);
+        float illuminant = a_illuminant(wave);
 
         color_x += intensity * xFit_1931(wave) * illuminant;
         color_y += intensity * yFit_1931(wave) * illuminant;
@@ -314,8 +315,9 @@ vec3 render_new( in vec3 ro, in vec3 rd, inout float seed ) {
     vec3 xyz = vec3(color_x, color_y, color_z);
 
     xyz *= k;
-    xyz.x /= (xyz.x + xyz.y + xyz.z);
-    xyz.y /= (xyz.x + xyz.y + xyz.z);
+    float total = xyz.x + xyz.y + xyz.z;
+    xyz.x /= total;
+    xyz.y /= total;
     xyz.z = 1. - xyz.x - xyz.y;
 
     //xyz = vec3(xFit_1931(wave), yFit_1931(wave), zFit_1931(wave));
@@ -416,7 +418,7 @@ void mainImage( out vec4 fragColor, in vec2 fragCoord ) {
         ro = ro + ca * vec3(randomInUnitDisk(seed), 0.)*.02;
         rd = normalize(fp - ro);
 
-        vec3 col = render(ro, rd, seed);
+        vec3 col = render_new(ro, rd, seed);
 
         if (reset) {
             fragColor = vec4(col, 1);
