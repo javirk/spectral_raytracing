@@ -21,8 +21,7 @@
 float dot2( in vec3 v ) { return dot(v,v); }
 
 // Plane 
-float iPlane( in vec3 ro, in vec3 rd, in vec2 distBound, inout vec3 normal,
-              in vec3 planeNormal, in float planeDist) {
+float iPlane( in vec3 ro, in vec3 rd, in vec2 distBound, inout vec3 normal, in vec3 planeNormal, in float planeDist) {
     float a = dot(rd, planeNormal);
     float d = -(dot(ro, planeNormal)+planeDist)/a;
     if (a > 0. || d < distBound.x || d > distBound.y) {
@@ -34,8 +33,7 @@ float iPlane( in vec3 ro, in vec3 rd, in vec2 distBound, inout vec3 normal,
 }
 
 // Sphere:          https://www.shadertoy.com/view/4d2XWV
-float iSphere( in vec3 ro, in vec3 rd, in vec2 distBound, inout vec3 normal,
-               float sphereRadius ) {
+float iSphere(in vec3 ro, in vec3 rd, in vec2 distBound, inout vec3 normal, float sphereRadius) {
     float b = dot(ro, rd);
     float c = dot(ro, ro) - sphereRadius*sphereRadius;
     float h = b*b - c;
