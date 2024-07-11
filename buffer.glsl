@@ -37,7 +37,6 @@ struct Material
 
 struct Hit
 {
-    bool didHit;
     float t;
     vec3 p;
     vec3 normal;
@@ -54,13 +53,13 @@ Sphere sceneList[] = Sphere[2](
     Sphere(
         vec3(0., 0., 0.),
         1.,
-        Material(DIELECTRIC, vec3(.8, .4, .4), .75 * .2 - .15, 1.4)
+        Material(DIELECTRIC, vec3(.8, .4, .4), 1., 1.5)
     ),
     // Add a huge sphere below the scene
     Sphere(
         vec3(0., -1001., 0.),
         1000.,
-        Material(METAL, vec3(.8, .8, .8), .75 * .2 - .15, 0.)
+        Material(LAMBERTIAN, vec3(.1, .1, .6), .75 * .2 - .15, 0.)
     )
 );
 
@@ -199,7 +198,7 @@ float checkerBoard(vec2 p) {
    return mod(floor(p.x) + floor(p.y), 2.);
 }
 
-bool worldhit(in Ray ray, in vec2 dist, out vec3 normal, out Hit rec) {
+bool worldhit(in Ray ray, in vec2 dist, out Hit rec) {
     Hit temp_rec;
     bool hit_anything = false;
     float closest_so_far = dist.y;
@@ -258,38 +257,39 @@ float schlick(float cosine, float r0) {
 
 
 vec3 render(in Ray ray, inout float seed) {
-    vec3 albedo, normal, col = vec3(1.); 
+    vec3 albedo, col = vec3(1.); 
     float roughness, type;
     Material mat;
     Hit rec;
     
     for (int i = 0; i < PATH_LENGTH; ++i) {    
-    	bool didHit = worldhit(ray, vec2(.0001, 100), normal, rec);
+    	bool didHit = worldhit(ray, vec2(.0001, 100), rec);
         float res = rec.t;
         Material mat = rec.mat;
 		if (didHit) {
 			ray.origin += ray.direction * res;
+            ray.origin -= ray.direction * .0001;
             // getMaterialProperties(ray.origin, res.z, albedo, type, roughness);
             
             if (mat.materialType == LAMBERTIAN) { // Added/hacked a reflection term
-                float F = FresnelSchlickRoughness(max(0.,-dot(normal, ray.direction)), .04, mat.fuzz);
+                float F = FresnelSchlickRoughness(max(0.,-dot(rec.normal, ray.direction)), .04, mat.fuzz);
                 if (F > hash1(seed)) {
-                    ray.direction = modifyDirectionWithRoughness(normal, reflect(ray.direction,normal), mat.fuzz, seed);
+                    ray.direction = modifyDirectionWithRoughness(rec.normal, reflect(ray.direction,rec.normal), mat.fuzz, seed);
                 } else {
                     col *= mat.albedo;
-			        ray.direction = cosWeightedRandomHemisphereDirection(normal, seed);
+			        ray.direction = cosWeightedRandomHemisphereDirection(rec.normal, seed);
                 }
             } else if (mat.materialType == METAL) {
-                // return vec3(res, 0, 0);
+                // return vec3(0, 1, 0);
                 col *= mat.albedo;
                 ray.direction = modifyDirectionWithRoughness(rec.normal, reflect(ray.direction, rec.normal), mat.fuzz, seed);            
             } else { // DIELECTRIC
                 vec3 normalOut, refracted;
                 float ni_over_nt, cosine, reflectProb = 1.;
-                if (dot(ray.direction, normal) > 0.) {
+                if (dot(ray.direction, rec.normal) > 0.) {
                     normalOut = -rec.normal;
             		ni_over_nt = mat.refractionIndex;
-                    cosine = dot(ray.direction, normal);
+                    cosine = dot(ray.direction, rec.normal);
                     cosine = sqrt(1. - (mat.refractionIndex * mat.refractionIndex) - (mat.refractionIndex * mat.refractionIndex) * cosine * cosine);
                 } else {
                     normalOut = rec.normal;
@@ -330,7 +330,7 @@ void mainImage( out vec4 fragColor, in vec2 fragCoord ) {
         
     vec4 data = texelFetch(iChannel0, ivec2(0), 0);
     
-    vec3 ro = vec3(3., 0., 0.);
+    vec3 ro = vec3(3., 1., 0.);
     vec3 ta = vec3(1., 0., 0.);
     
     #ifdef MOVE_CAMERA
@@ -346,8 +346,7 @@ void mainImage( out vec4 fragColor, in vec2 fragCoord ) {
         ta = vec3(.5, -.4, -.5);
     #endif
 
-    mat3 ca = setCamera(ro, ta, 0.);    
-    vec3 normal;
+    mat3 ca = setCamera(ro, ta, 0.);
     Material mat;
 
     float fpd = data.x;
@@ -355,7 +354,7 @@ void mainImage( out vec4 fragColor, in vec2 fragCoord ) {
         // Calculate focus plane.
         Hit rec;
         Ray focus_ray = Ray(ro, normalize(vec3(.5,0,-.5)-ro));
-        bool didHit = worldhit(focus_ray, vec2(0, 100), normal, rec);
+        bool didHit = worldhit(focus_ray, vec2(0, 100), rec);
         fragColor = vec4(rec.t, iResolution.xy, iResolution.x);
     } else { 
         vec2 p = (-iResolution.xy + 2. * fragCoord - 1.) / iResolution.y;
