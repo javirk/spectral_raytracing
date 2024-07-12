@@ -25,6 +25,7 @@ struct Ray
 {
     vec3 origin;
     vec3 direction;
+    float wavelenght;
 };
 
 struct Material
@@ -55,7 +56,6 @@ Sphere sceneList[] = Sphere[2](
         1.,
         Material(DIELECTRIC, vec3(.8, .4, .4), 1., 1.5)
     ),
-    // Add a huge sphere below the scene
     Sphere(
         vec3(0., -1001., 0.),
         1000.,
@@ -228,19 +228,6 @@ float gpuIndepentHash(float p) {
     return fract(p);
 }
 
-// void getMaterialProperties(in vec3 pos, in float mat, out vec3 albedo, out float type, out float roughness) {
-//     albedo = pal(mat*.59996323+.5, vec3(.5),vec3(.5),vec3(1),vec3(0,.1,.2));
-
-//     if( mat < 1.5 ) {            
-//         albedo = vec3(.25 + .25 * checkerBoard(pos.xz * 5.));
-//         roughness = .75 * albedo.x - .15;
-//         type = METAL;
-//     } else {
-//         type = floor(gpuIndepentHash(mat+.3) * 3.);
-//         roughness = (1.-type*.475) * gpuIndepentHash(mat);
-//     }
-// }
-
 float reflectivity(float n1_over_n2, float cosTheta, float wavelenght) {
     float r0 = (n1_over_n2 - 1.) / (n1_over_n2 + 1.);
     r0 = r0*r0;
@@ -255,15 +242,15 @@ float schlick(float cosine, float r0) {
     return r0 + (1. - r0) * pow(abs(1. - cosine), 5.);
 }
 
-vec3 refract_mine(vec3 v, vec3 n, float ni_over_nt) {
-    float cos_theta = min(dot(-v, n), 1.0);
-    vec3 r_out_perp = ni_over_nt * (v + cos_theta * n);
-    vec3 r_out_parallel = -sqrt(abs(1. - dot(r_out_perp, r_out_perp))) * n;
-    return r_out_perp + r_out_parallel;
-}
+// vec3 refract_mine(vec3 v, vec3 n, float ni_over_nt) {
+//     float cos_theta = min(dot(-v, n), 1.0);
+//     vec3 r_out_perp = ni_over_nt * (v + cos_theta * n);
+//     vec3 r_out_parallel = -sqrt(abs(1. - dot(r_out_perp, r_out_perp))) * n;
+//     return r_out_perp + r_out_parallel;
+// }
 
 
-vec3 render(in Ray ray, inout float seed) {
+vec3 trace(in Ray ray, inout float seed) {
     vec3 albedo, col = vec3(1.); 
     float roughness, type;
     Material mat;
@@ -276,7 +263,6 @@ vec3 render(in Ray ray, inout float seed) {
 		if (didHit) {
 			ray.origin += ray.direction * res;
             //ray.origin -= ray.direction * .0001;  // This should work, but it doesn't
-            // getMaterialProperties(ray.origin, res.z, albedo, type, roughness);
             
             if (mat.materialType == LAMBERTIAN) { // Added/hacked a reflection term
                 float F = FresnelSchlickRoughness(max(0.,-dot(rec.normal, ray.direction)), .04, mat.fuzz);
@@ -307,17 +293,16 @@ vec3 render(in Ray ray, inout float seed) {
                 }
             
 	            // Refract the ray.
-	            refracted = refract_mine(normalize(ray.direction), normal, ni_over_nt);
-                ray.direction = refracted;
+	            refracted = refract(normalize(ray.direction), normal, ni_over_nt);
     	        
         	    // Handle total internal reflection.
-                // if(refracted != vec3(0)) {
-                // 	float r0 = (1. - ni_over_nt)/(1. + ni_over_nt);
-	        	// 	reflectProb = FresnelSchlickRoughness(cosine, r0*r0, mat.fuzz);
-                // }
+                if(refracted != vec3(0)) {
+                	float r0 = (1. - ni_over_nt)/(1. + ni_over_nt);
+	        		reflectProb = FresnelSchlickRoughness(cosine, r0*r0, mat.fuzz);
+                }
                 
-                // ray.direction = hash1(seed) <= reflectProb ? reflect(ray.direction, normal) : refracted;
-                // ray.direction = modifyDirectionWithRoughness(normal, ray.direction, roughness, seed);            
+                ray.direction = hash1(seed) <= reflectProb ? reflect(ray.direction, normal) : refracted;
+                ray.direction = modifyDirectionWithRoughness(normal, ray.direction, roughness, seed);            
             }
         } else {
             col *= getSkyColor(ray.direction);
@@ -333,6 +318,10 @@ mat3 setCamera( in vec3 ro, in vec3 ta, float cr ) {
 	vec3 cu = normalize(cross(cw, cp));
 	vec3 cv = (cross(cu, cw));
     return mat3(cu, cv, cw);
+}
+
+vec3 render(in Ray ray, inout float seed) {
+    return trace(ray, seed);
 }
 
 void mainImage( out vec4 fragColor, in vec2 fragCoord ) {
@@ -363,7 +352,7 @@ void mainImage( out vec4 fragColor, in vec2 fragCoord ) {
     if(all(equal(ivec2(fragCoord), ivec2(0)))) {
         // Calculate focus plane.
         Hit rec;
-        Ray focus_ray = Ray(ro, normalize(vec3(.5,0,-.5)-ro));
+        Ray focus_ray = Ray(ro, normalize(vec3(.5,0,-.5)-ro), 0.);
         bool didHit = worldhit(focus_ray, vec2(0, 100), rec);
         fragColor = vec4(rec.t, iResolution.xy, iResolution.x);
     } else { 
@@ -379,7 +368,7 @@ void mainImage( out vec4 fragColor, in vec2 fragCoord ) {
         ro = ro + ca * vec3(randomInUnitDisk(seed), 0.) * .02;
         rd = normalize(fp - ro);
 
-        Ray ray = Ray(ro, rd);
+        Ray ray = Ray(ro, rd, 0.);
 
         vec3 col = render(ray, seed);
 
