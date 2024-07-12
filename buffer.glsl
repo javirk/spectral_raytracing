@@ -59,7 +59,7 @@ Sphere sceneList[] = Sphere[2](
     Sphere(
         vec3(0., -1001., 0.),
         1000.,
-        Material(LAMBERTIAN, vec3(.1, .1, .6), .75 * .2 - .15, 0.)
+        Material(LAMBERTIAN, vec3(.1, .5, .2), .75 * .2 - .15, 0.)
     )
 );
 
@@ -255,6 +255,13 @@ float schlick(float cosine, float r0) {
     return r0 + (1. - r0) * pow(abs(1. - cosine), 5.);
 }
 
+vec3 refract_mine(vec3 v, vec3 n, float ni_over_nt) {
+    float cos_theta = min(dot(-v, n), 1.0);
+    vec3 r_out_perp = ni_over_nt * (v + cos_theta * n);
+    vec3 r_out_parallel = -sqrt(abs(1. - dot(r_out_perp, r_out_perp))) * n;
+    return r_out_perp + r_out_parallel;
+}
+
 
 vec3 render(in Ray ray, inout float seed) {
     vec3 albedo, col = vec3(1.); 
@@ -263,12 +270,12 @@ vec3 render(in Ray ray, inout float seed) {
     Hit rec;
     
     for (int i = 0; i < PATH_LENGTH; ++i) {    
-    	bool didHit = worldhit(ray, vec2(.0001, 100), rec);
+    	bool didHit = worldhit(ray, vec2(.001, 100), rec);
         float res = rec.t;
         Material mat = rec.mat;
 		if (didHit) {
 			ray.origin += ray.direction * res;
-            ray.origin -= ray.direction * .0001;
+            //ray.origin -= ray.direction * .0001;  // This should work, but it doesn't
             // getMaterialProperties(ray.origin, res.z, albedo, type, roughness);
             
             if (mat.materialType == LAMBERTIAN) { // Added/hacked a reflection term
@@ -284,30 +291,33 @@ vec3 render(in Ray ray, inout float seed) {
                 col *= mat.albedo;
                 ray.direction = modifyDirectionWithRoughness(rec.normal, reflect(ray.direction, rec.normal), mat.fuzz, seed);            
             } else { // DIELECTRIC
-                vec3 normalOut, refracted;
+                vec3 normal, refracted;
                 float ni_over_nt, cosine, reflectProb = 1.;
+                // rec.normal is always pointing outwards
                 if (dot(ray.direction, rec.normal) > 0.) {
-                    normalOut = -rec.normal;
+                    // Ray is inside
+                    normal = - rec.normal;
             		ni_over_nt = mat.refractionIndex;
-                    cosine = dot(ray.direction, rec.normal);
+                    cosine = dot(ray.direction, normal);
                     cosine = sqrt(1. - (mat.refractionIndex * mat.refractionIndex) - (mat.refractionIndex * mat.refractionIndex) * cosine * cosine);
                 } else {
-                    normalOut = rec.normal;
+                    normal = rec.normal;
                     ni_over_nt = 1. / mat.refractionIndex;
-                    cosine = - dot(ray.direction, rec.normal);
+                    cosine = - dot(ray.direction, normal);
                 }
             
 	            // Refract the ray.
-	            refracted = refract(normalize(ray.direction), normalOut, ni_over_nt);
+	            refracted = refract_mine(normalize(ray.direction), normal, ni_over_nt);
+                ray.direction = refracted;
     	        
         	    // Handle total internal reflection.
-                if(refracted != vec3(0)) {
-                	float r0 = (1. - ni_over_nt)/(1. + ni_over_nt);
-	        		reflectProb = FresnelSchlickRoughness(cosine, r0*r0, mat.fuzz);
-                }
+                // if(refracted != vec3(0)) {
+                // 	float r0 = (1. - ni_over_nt)/(1. + ni_over_nt);
+	        	// 	reflectProb = FresnelSchlickRoughness(cosine, r0*r0, mat.fuzz);
+                // }
                 
-                ray.direction = hash1(seed) <= reflectProb ? reflect(ray.direction, rec.normal) : refracted;
-                ray.direction = modifyDirectionWithRoughness(-normalOut, ray.direction, roughness, seed);            
+                // ray.direction = hash1(seed) <= reflectProb ? reflect(ray.direction, normal) : refracted;
+                // ray.direction = modifyDirectionWithRoughness(normal, ray.direction, roughness, seed);            
             }
         } else {
             col *= getSkyColor(ray.direction);
@@ -330,7 +340,7 @@ void mainImage( out vec4 fragColor, in vec2 fragCoord ) {
         
     vec4 data = texelFetch(iChannel0, ivec2(0), 0);
     
-    vec3 ro = vec3(3., 1., 0.);
+    vec3 ro = vec3(3., 0., 0.);
     vec3 ta = vec3(1., 0., 0.);
     
     #ifdef MOVE_CAMERA
