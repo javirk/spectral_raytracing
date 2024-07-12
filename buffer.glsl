@@ -255,6 +255,7 @@ vec3 trace(in Ray ray, inout float seed) {
     float roughness, type;
     Material mat;
     Hit rec;
+    float intensity = 1.;
     
     for (int i = 0; i < PATH_LENGTH; ++i) {    
     	bool didHit = worldhit(ray, vec2(.001, 100), rec);
@@ -267,16 +268,19 @@ vec3 trace(in Ray ray, inout float seed) {
             if (mat.materialType == LAMBERTIAN) { // Added/hacked a reflection term
                 float F = FresnelSchlickRoughness(max(0.,-dot(rec.normal, ray.direction)), .04, mat.fuzz);
                 if (F > hash1(seed)) {
-                    ray.direction = modifyDirectionWithRoughness(rec.normal, reflect(ray.direction,rec.normal), mat.fuzz, seed);
+                    ray.direction = modifyDirectionWithRoughness(rec.normal, reflect(ray.direction, rec.normal), mat.fuzz, seed);
                 } else {
                     col *= mat.albedo;
 			        ray.direction = cosWeightedRandomHemisphereDirection(rec.normal, seed);
                 }
+                intensity *= mat.albedo.x;  // TODO: Make this more legible.
             } else if (mat.materialType == METAL) {
                 // return vec3(0, 1, 0);
                 col *= mat.albedo;
                 ray.direction = modifyDirectionWithRoughness(rec.normal, reflect(ray.direction, rec.normal), mat.fuzz, seed);            
+                intensity *= mat.albedo.x;  // TODO: Make this more legible.
             } else { // DIELECTRIC
+                intensity *= 1.;
                 vec3 normal, refracted;
                 float ni_over_nt, cosine, reflectProb = 1.;
                 // rec.normal is always pointing outwards
@@ -305,6 +309,7 @@ vec3 trace(in Ray ray, inout float seed) {
                 ray.direction = modifyDirectionWithRoughness(normal, ray.direction, roughness, seed);            
             }
         } else {
+            // Here it will be: intensity * skyColor(ray);
             col *= getSkyColor(ray.direction);
 			return col;
         }
