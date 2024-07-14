@@ -2,6 +2,8 @@
 
 This repository contains the source code for a raytracing application that focuses on accurately simulating the behavior of light across the electromagnetic spectrum.
 
+![Spheres](/assets/spheres.png)
+
 ## Features
 - [x] Wavelength uniform sampling.
 - [ ] Importance sampling.
