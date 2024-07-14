@@ -1,17 +1,14 @@
-// Ray Tracing - Primitives. Created by Reinder Nijhoff 2019
-// @reindernijhoff
-//
-// https://www.shadertoy.com/view/tl23Rm
+// Ray Tracing - Primitives. Created by Javier Gamazo 2024
+// https://www.shadertoy.com/view/Mfsyz7
 //
 // I have combined different intersection routines in one shader (similar 
 // to "Raymarching - Primitives": https://www.shadertoy.com/view/Xds3zN) and
 // added a simple ray tracer to visualize a scene with all primitives.
-// I should add the structs from here: https://www.shadertoy.com/view/tsKyWG
+// Functions for CIE from https://www.shadertoy.com/view/tsKyWG
 
 #define PI 3.14159265358979323
 #define PATH_LENGTH 12
 #iChannel0 "self"
-#include "common.glsl"
 
 #define LOWER_BOUND 450
 #define UPPER_BOUND 750
@@ -85,16 +82,21 @@ struct Sphere{
     Material mat;
 };
 
-Sphere sceneList[] = Sphere[2](
+Sphere sceneList[] = Sphere[3](
     Sphere(
         vec3(0., 0., 0.),
         1.,
         Material(DIELECTRIC, vec3(.5, .4, .4), 1., 1.5)
     ),
     Sphere(
+        vec3(1.5, 0.2, 0.2),
+        0.2,
+        Material(DIELECTRIC, vec3(.5, .4, .4), 1., 1.5)
+    ),
+    Sphere(
         vec3(0., -1001., 0.),
         1000.,
-        Material(LAMBERTIAN, vec3(.4, .5, .2), .4, 0.)
+        Material(LAMBERTIAN, vec3(.5, .5, .2), .4, 0.)
     )
 );
 
@@ -327,7 +329,7 @@ float trace(in Ray ray, inout float seed) {
                 } else {
 			        ray.direction = cosWeightedRandomHemisphereDirection(rec.normal, seed);
                 }
-                intensity *= mat.albedo.x;  // TODO: Make this more legible.
+                intensity *= mat.albedo.x * max(0.0, dot(rec.normal, ray.direction) / PI) * PI;  // TODO: Make this more legible. attenuation * scatterPDF / pdf
             } else if (mat.materialType == METAL) {
                 ray.direction = modifyDirectionWithRoughness(rec.normal, reflect(ray.direction, rec.normal), mat.fuzz, seed);            
                 intensity *= mat.albedo.x;  // TODO: Make this more legible.
