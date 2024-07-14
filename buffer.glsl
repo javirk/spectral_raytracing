@@ -1,31 +1,63 @@
-// Ray Tracing - Primitives. Created by Reinder Nijhoff 2019
-// @reindernijhoff
-//
-// https://www.shadertoy.com/view/tl23Rm
+// Ray Tracing - Primitives. Created by Javier Gamazo 2024
+// https://www.shadertoy.com/view/Mfsyz7
 //
 // I have combined different intersection routines in one shader (similar 
 // to "Raymarching - Primitives": https://www.shadertoy.com/view/Xds3zN) and
 // added a simple ray tracer to visualize a scene with all primitives.
-// I should add the structs from here: https://www.shadertoy.com/view/tsKyWG
+// Functions for CIE from https://www.shadertoy.com/view/tsKyWG
 
+#define PI 3.14159265358979323
 #define PATH_LENGTH 12
 #iChannel0 "self"
-#include "common.glsl"
 
 #define LOWER_BOUND 450
 #define UPPER_BOUND 750
-#define NUM_WAVELENGTHS 10
+#define NUM_WAVELENGTHS 20
 // #define MOVE_CAMERA
 
 #define LAMBERTIAN 0
 #define METAL 1
 #define DIELECTRIC 2
 
+const mat3 XYZ_2_RGB = (mat3(
+     3.2404542,-0.9692660, 0.0556434,
+    -1.5371385, 1.8760108,-0.2040259,
+    -0.4985314, 0.0415560, 1.0572252
+));
+
+const mat3 RGB_2_XYZ = (mat3(
+    0.4124564, 0.2126729, 0.0193339,
+    0.3575761, 0.7151522, 0.1191920,
+    0.1804375, 0.0721750, 0.9503041
+));
+
+float gaussian(float x, float mu, float sigma)
+{
+    return 1.0 / (sigma * sqrt(2.0 * PI)) * exp(-(x-mu)*(x-mu)/(2.*sigma*sigma));
+}
+
+
+// The CIE color matching functions were taken from  https://www.fourmilab.ch/documents/specrend
+// The tabulated functions then were approximated with gaussians (for G and B) and with a mixture of two gaussiuns (R).
+vec3 wavelength2XYZ(float l)
+{
+	return vec3(
+    	8233.31 * gaussian(l, 593.951, 34.00) + 1891.26 * gaussian(l, 448.89, 18.785),
+        10522.64 * gaussian(l, 555.38, 40.80),
+        11254.78 * gaussian(l, 452.98, 21.57)
+    );
+}
+
+float XYZ2WavelengthApprox(float l, vec3 color) {
+    return dot(wavelength2XYZ(l), color) / 100.0;
+}
+
+
 struct Ray
 {
     vec3 origin;
     vec3 direction;
-    float wavelenght;
+    float wavelength;
 };
 
 struct Material
@@ -50,16 +82,21 @@ struct Sphere{
     Material mat;
 };
 
-Sphere sceneList[] = Sphere[2](
+Sphere sceneList[] = Sphere[3](
     Sphere(
         vec3(0., 0., 0.),
         1.,
-        Material(DIELECTRIC, vec3(.8, .4, .4), 1., 1.5)
+        Material(DIELECTRIC, vec3(.5, .4, .4), 1., 1.5)
+    ),
+    Sphere(
+        vec3(1.5, 0.2, 0.2),
+        0.2,
+        Material(DIELECTRIC, vec3(.5, .4, .4), 1., 1.5)
     ),
     Sphere(
         vec3(0., -1001., 0.),
         1000.,
-        Material(LAMBERTIAN, vec3(.1, .5, .2), .75 * .2 - .15, 0.)
+        Material(LAMBERTIAN, vec3(.5, .5, .2), .4, 0.)
     )
 );
 
@@ -216,6 +253,7 @@ bool worldhit(in Ray ray, in vec2 dist, out Hit rec) {
 
 vec3 getSkyColor(vec3 rd) {
     vec3 col = mix(vec3(1), vec3(.5, .7, 1), .5 + .5 * rd.y);
+    col = vec3(0.);
     float sun = clamp(dot(normalize(vec3(-0.3, .7, -.6)), rd), 0., 1.);
     col += vec3(1, .6, .1) * (pow(sun, 4.) + 10. * pow(sun, 32.));
     return col;
@@ -242,19 +280,39 @@ float schlick(float cosine, float r0) {
     return r0 + (1. - r0) * pow(abs(1. - cosine), 5.);
 }
 
-// vec3 refract_mine(vec3 v, vec3 n, float ni_over_nt) {
-//     float cos_theta = min(dot(-v, n), 1.0);
-//     vec3 r_out_perp = ni_over_nt * (v + cos_theta * n);
-//     vec3 r_out_parallel = -sqrt(abs(1. - dot(r_out_perp, r_out_perp))) * n;
-//     return r_out_perp + r_out_parallel;
-// }
+vec3 refract_mine(vec3 v, vec3 n, float ni_over_nt) {
+    float cos_theta = min(dot(-v, n), 1.0);
+    vec3 r_out_perp = ni_over_nt * (v + cos_theta * n);
+    vec3 r_out_parallel = -sqrt(abs(1. - dot(r_out_perp, r_out_perp))) * n;
+    return r_out_perp + r_out_parallel;
+}
+
+float skyColor(Ray ray) {
+	vec3 sky = getSkyColor(ray.direction);
+    sky = RGB_2_XYZ * pow(sky, vec3(2.2));
+    return XYZ2WavelengthApprox(ray.wavelength, sky) * 0.5;
+}
+
+float n_wavelength(float lambda_nm) {
+    float lambda_um = lambda_nm / 1000.0;
+    
+    // Coefficients for Cauchy's equation, adjusted to fit the range 1 < n < 2 for visible spectrum
+    float A = 0.438;
+    float B = 0.316;
+    
+    // Calculate refractive index
+    float n_lambda = A + B / (lambda_um * lambda_um);
+    
+    return n_lambda;
+}
 
 
-vec3 trace(in Ray ray, inout float seed) {
-    vec3 albedo, col = vec3(1.); 
+float trace(in Ray ray, inout float seed) {
+    vec3 albedo = vec3(1.); 
     float roughness, type;
     Material mat;
     Hit rec;
+    float intensity = 1.;
     
     for (int i = 0; i < PATH_LENGTH; ++i) {    
     	bool didHit = worldhit(ray, vec2(.001, 100), rec);
@@ -267,28 +325,30 @@ vec3 trace(in Ray ray, inout float seed) {
             if (mat.materialType == LAMBERTIAN) { // Added/hacked a reflection term
                 float F = FresnelSchlickRoughness(max(0.,-dot(rec.normal, ray.direction)), .04, mat.fuzz);
                 if (F > hash1(seed)) {
-                    ray.direction = modifyDirectionWithRoughness(rec.normal, reflect(ray.direction,rec.normal), mat.fuzz, seed);
+                    ray.direction = modifyDirectionWithRoughness(rec.normal, reflect(ray.direction, rec.normal), mat.fuzz, seed);
                 } else {
-                    col *= mat.albedo;
 			        ray.direction = cosWeightedRandomHemisphereDirection(rec.normal, seed);
                 }
+                intensity *= mat.albedo.x * max(0.0, dot(rec.normal, ray.direction) / PI) * PI;  // TODO: Make this more legible. attenuation * scatterPDF / pdf
             } else if (mat.materialType == METAL) {
-                // return vec3(0, 1, 0);
-                col *= mat.albedo;
                 ray.direction = modifyDirectionWithRoughness(rec.normal, reflect(ray.direction, rec.normal), mat.fuzz, seed);            
+                intensity *= mat.albedo.x;  // TODO: Make this more legible.
             } else { // DIELECTRIC
+                intensity *= 1.;
                 vec3 normal, refracted;
                 float ni_over_nt, cosine, reflectProb = 1.;
+                float refractionIndex = mat.refractionIndex;
+                refractionIndex = n_wavelength(ray.wavelength);
                 // rec.normal is always pointing outwards
                 if (dot(ray.direction, rec.normal) > 0.) {
                     // Ray is inside
                     normal = - rec.normal;
-            		ni_over_nt = mat.refractionIndex;
+            		ni_over_nt = refractionIndex;
                     cosine = dot(ray.direction, normal);
-                    cosine = sqrt(1. - (mat.refractionIndex * mat.refractionIndex) - (mat.refractionIndex * mat.refractionIndex) * cosine * cosine);
+                    cosine = sqrt(1. - (refractionIndex * refractionIndex) - (refractionIndex * refractionIndex) * cosine * cosine);
                 } else {
                     normal = rec.normal;
-                    ni_over_nt = 1. / mat.refractionIndex;
+                    ni_over_nt = 1. / refractionIndex;
                     cosine = - dot(ray.direction, normal);
                 }
             
@@ -305,11 +365,11 @@ vec3 trace(in Ray ray, inout float seed) {
                 ray.direction = modifyDirectionWithRoughness(normal, ray.direction, roughness, seed);            
             }
         } else {
-            col *= getSkyColor(ray.direction);
-			return col;
+            intensity *= skyColor(ray);
+			return intensity;
         }
     }  
-    return vec3(0);
+    return 0.;
 }
 
 mat3 setCamera( in vec3 ro, in vec3 ta, float cr ) {
@@ -321,7 +381,20 @@ mat3 setCamera( in vec3 ro, in vec3 ta, float cr ) {
 }
 
 vec3 render(in Ray ray, inout float seed) {
-    return trace(ray, seed);
+    vec3 col = vec3(0.);
+    // Loop over the wavelengths
+    for (int i = 0; i < NUM_WAVELENGTHS; i++) {
+        ray.wavelength = float(LOWER_BOUND + i * (UPPER_BOUND - LOWER_BOUND) / NUM_WAVELENGTHS);
+        float intensity = trace(ray, seed);
+        vec3 color = wavelength2XYZ(ray.wavelength);
+
+        col += color * intensity;
+    }
+    col = XYZ_2_RGB * col;
+    col /= float(NUM_WAVELENGTHS);
+    col /= 40.0;
+	col = clamp(col, vec3(0.0), vec3(1.0));
+    return col;
 }
 
 void mainImage( out vec4 fragColor, in vec2 fragCoord ) {
